@@ -1,0 +1,10 @@
+.env
+venv
+.venv
+__pycache__
+*.pyc
+*.docx
+output
+manuscript*.docx
+jd.md
+plan.md
