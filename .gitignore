@@ -6,6 +6,7 @@ __pycache__
 *.docx
 output
 manuscript*.docx
+manuscript*.md
 jd.md
 plan.md
 nul

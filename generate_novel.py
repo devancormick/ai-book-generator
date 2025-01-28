@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
 AI Book Generator – local script to generate a murder mystery novel (20k–30k words)
-using OpenAI API or local Llama via Ollama. Outputs a .docx manuscript.
+using OpenAI API or local Llama via Ollama. Outputs .md (default) or .docx.
 """
 
+import argparse
+import json
 import os
 import re
 import sys
-import json
+from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 try:
     from dotenv import load_dotenv
@@ -27,13 +30,54 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 
 TEST_RUN = os.environ.get("TEST_RUN", "").strip() in ("1", "true", "yes")
+
+
+def _parse_format() -> str:
+    parser = argparse.ArgumentParser(description="Generate a murder mystery novel.")
+    parser.add_argument(
+        "--format", "-f",
+        choices=["md", "docx"],
+        default=None,
+        help="Output format: md (default) or docx",
+    )
+    args, _ = parser.parse_known_args()
+    if args.format:
+        return args.format
+    raw = (os.environ.get("OUTPUT_FORMAT", "md") or "md").strip().lower()
+    return "docx" if raw == "docx" else "md"
+
+
+OUTPUT_FORMAT = _parse_format()
 TARGET_CHAPTERS = 2 if TEST_RUN else 11
 TARGET_WORDS_PER_CHAPTER = 800 if TEST_RUN else 2500
 GENRE = "murder mystery"
 
 
-def use_openai():
-    return bool(OPENAI_API_KEY and OPENAI_API_KEY.strip())
+_OPENAI_VALID: Optional[bool] = None
+
+
+def _validate_openai_key() -> bool:
+    """Validate OPENAI_API_KEY: format check + API ping. Cached after first call."""
+    global _OPENAI_VALID
+    if _OPENAI_VALID is not None:
+        return _OPENAI_VALID
+    key = (OPENAI_API_KEY or "").strip()
+    if not key or not key.startswith("sk-") or len(key) < 32:
+        _OPENAI_VALID = False
+        return False
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=key)
+        client.models.list(limit=1)
+        _OPENAI_VALID = True
+        return True
+    except Exception:
+        _OPENAI_VALID = False
+        return False
+
+
+def use_openai() -> bool:
+    return _validate_openai_key()
 
 
 def check_backend():
@@ -98,7 +142,9 @@ def generate_outline() -> list[dict]:
         f"Create a detailed outline for a {GENRE} novel with exactly {TARGET_CHAPTERS} chapters. "
         f"Each chapter should be about {TARGET_WORDS_PER_CHAPTER} words. "
         "Include: title, setting, main characters (suspects and victim), central mystery, and red herrings. "
-        "Output a JSON array of objects, each with keys: \"chapter_number\" (1-based), \"title\", \"summary\" (2-4 sentences)."
+        "Output a JSON array of objects. First object MUST include \"novel_title\": a unique, specific book title "
+        "(e.g. \"The Ashford Manor Affair\", \"Death at the Winter Ball\")—never generic like \"Murder Mystery\". "
+        "Each object: \"chapter_number\" (1-based), \"title\", \"summary\" (2-4 sentences)."
     )
     raw = complete(system, user)
     raw = re.sub(r"^```\w*\n?", "", raw)
@@ -113,10 +159,13 @@ def generate_outline() -> list[dict]:
 
 
 def _fallback_outline() -> list[dict]:
-    return [
+    items = [
         {"chapter_number": i, "title": f"Chapter {i}", "summary": f"Key events for chapter {i}."}
         for i in range(1, TARGET_CHAPTERS + 1)
     ]
+    if items:
+        items[0]["novel_title"] = "The Shadow at Thornwood Hall"
+    return items
 
 
 def build_story_state_summary(state: dict) -> str:
@@ -179,6 +228,15 @@ def summarize_chapter(chapter_text: str, story_state: dict) -> str:
     return complete(system, user)
 
 
+def export_md(chapters: list[tuple[str, str]], output_path: Path, title: str = "Murder Mystery"):
+    lines = [f"# {title}\n", "*Generated manuscript – murder mystery.*\n"]
+    for chapter_title, body in chapters:
+        lines.append(f"\n## {chapter_title}\n\n")
+        lines.append(body.strip())
+        lines.append("\n\n")
+    output_path.write_text("".join(lines), encoding="utf-8")
+
+
 def export_docx(chapters: list[tuple[str, str]], output_path: Path, title: str = "Murder Mystery"):
     doc = Document()
     doc.add_heading(title, 0)
@@ -198,10 +256,16 @@ def main():
     print("AI Book Generator – murder mystery (local script)")
     if TEST_RUN:
         print("Test run: 2 short chapters (~800 words each).")
+    print(f"Output format: {OUTPUT_FORMAT}")
     if use_openai():
-        print("Using OpenAI API.")
+        print("Using OpenAI API (valid key).")
     else:
-        print(f"Using Ollama at {OLLAMA_BASE} (model: {OLLAMA_MODEL}).")
+        key_present = bool((OPENAI_API_KEY or "").strip())
+        if key_present:
+            print("OpenAI key invalid or unreachable, using Llama (Ollama).")
+        else:
+            print("No OpenAI key provided, using Llama (Ollama).")
+        print(f"Ollama at {OLLAMA_BASE} (model: {OLLAMA_MODEL}).")
     check_backend()
     print("Generating outline...")
     outline = generate_outline()
@@ -224,9 +288,32 @@ def main():
         story_state["recent_summaries"].append(f"Ch{ch_num}: {summary}")
         story_state = extract_state_updates(text, story_state)
 
-    out_name = "manuscript_test.docx" if TEST_RUN else "manuscript.docx"
-    out_path = Path(__file__).resolve().parent / out_name
-    export_docx(chapters_out, out_path)
+    ext = "docx" if OUTPUT_FORMAT == "docx" else "md"
+    base = "manuscript_test" if TEST_RUN else "manuscript"
+    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    novel_title = ""
+    title_slug = ""
+    for item in (outline or []):
+        if isinstance(item, dict):
+            raw = str(item.get("novel_title", "")).strip()
+            if raw:
+                novel_title = raw
+                title_slug = "_" + re.sub(r"[^\w\s-]", "", raw).strip().replace(" ", "_")[:50]
+            elif not novel_title and item.get("title"):
+                novel_title = str(item["title"]).strip()
+                title_slug = "_" + re.sub(r"[^\w\s-]", "", novel_title).strip().replace(" ", "_")[:50] if novel_title else ""
+            break
+    if not novel_title:
+        novel_title = outline[0].get("title", "Untitled") if outline and isinstance(outline[0], dict) else "Untitled"
+        title_slug = "_" + re.sub(r"[^\w\s-]", "", novel_title).strip().replace(" ", "_")[:50] if novel_title else ""
+    out_name = f"{base}{title_slug}_{ts}.{ext}"
+    out_dir = Path(__file__).resolve().parent / "output"
+    out_dir.mkdir(exist_ok=True)
+    out_path = out_dir / out_name
+    if OUTPUT_FORMAT == "docx":
+        export_docx(chapters_out, out_path, title=novel_title)
+    else:
+        export_md(chapters_out, out_path, title=novel_title)
     word_count = sum(len(b.split()) for _, b in chapters_out)
     print(f"Done. Manuscript saved to: {out_path}")
     print(f"Approximate word count: {word_count}")

@@ -54,7 +54,7 @@ Word count is controlled by chapter targets (e.g. 11 chapters Ã— ~2,200 words â‰
    python generate_novel.py
    ```
 
-6. **Output:** `manuscript.docx` appears in the same folder as the script.
+6. **Output:** `output/manuscript.md` (default) or `output/manuscript.docx`. Use `--format docx` or `OUTPUT_FORMAT=docx` for Word.
 
 ## Environment variables
 
@@ -64,6 +64,7 @@ Word count is controlled by chapter targets (e.g. 11 chapters Ã— ~2,200 words â‰
 | `OPENAI_MODEL`    | OpenAI model (default: `gpt-4o-mini`) |
 | `OLLAMA_HOST`     | Ollama base URL (default: `http://localhost:11434`) |
 | `OLLAMA_MODEL`    | Ollama model (default: `llama3.2`) |
+| `OUTPUT_FORMAT`   | `md` (default) or `docx` |
 
 ## Project status
 
