@@ -26,13 +26,35 @@ OLLAMA_BASE = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 
-TARGET_CHAPTERS = 11
-TARGET_WORDS_PER_CHAPTER = 2500
+TEST_RUN = os.environ.get("TEST_RUN", "").strip() in ("1", "true", "yes")
+TARGET_CHAPTERS = 2 if TEST_RUN else 11
+TARGET_WORDS_PER_CHAPTER = 800 if TEST_RUN else 2500
 GENRE = "murder mystery"
 
 
 def use_openai():
     return bool(OPENAI_API_KEY and OPENAI_API_KEY.strip())
+
+
+def check_backend():
+    """Verify we can reach the chosen backend before generating."""
+    if use_openai():
+        return
+    try:
+        r = requests.get(f"{OLLAMA_BASE.rstrip('/')}/api/tags", timeout=5)
+        r.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        print("Ollama is not running or not reachable.", file=sys.stderr)
+        print(f"  {e}", file=sys.stderr)
+        print(
+            "  Start Ollama (e.g. run 'ollama serve' or start the Ollama app), then run this script again.",
+            file=sys.stderr,
+        )
+        print(
+            "  Or set OPENAI_API_KEY in .env to use OpenAI instead.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def complete_openai(system: str, user: str) -> str:
@@ -174,10 +196,13 @@ def export_docx(chapters: list[tuple[str, str]], output_path: Path, title: str =
 
 def main():
     print("AI Book Generator – murder mystery (local script)")
+    if TEST_RUN:
+        print("Test run: 2 short chapters (~800 words each).")
     if use_openai():
         print("Using OpenAI API.")
     else:
         print(f"Using Ollama at {OLLAMA_BASE} (model: {OLLAMA_MODEL}).")
+    check_backend()
     print("Generating outline...")
     outline = generate_outline()
     print(f"Outline: {len(outline)} chapters.")
@@ -199,7 +224,8 @@ def main():
         story_state["recent_summaries"].append(f"Ch{ch_num}: {summary}")
         story_state = extract_state_updates(text, story_state)
 
-    out_path = Path(__file__).resolve().parent / "manuscript.docx"
+    out_name = "manuscript_test.docx" if TEST_RUN else "manuscript.docx"
+    out_path = Path(__file__).resolve().parent / out_name
     export_docx(chapters_out, out_path)
     word_count = sum(len(b.split()) for _, b in chapters_out)
     print(f"Done. Manuscript saved to: {out_path}")

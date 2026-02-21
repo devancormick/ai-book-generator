@@ -8,6 +8,17 @@ Local Python script that generates a 20,000–30,000 word murder mystery novel. 
 - Writes each chapter with a simple memory/summary system for continuity
 - Exports the manuscript as `manuscript.docx` in the project folder
 
+## Why this approach?
+
+Generating a full 20k–30k novel in **one prompt** is not practical or reliable: context limits and single-shot length lead to drift, contradictions, and cut-offs. This script uses a **multi-step pipeline** instead:
+
+1. **Outline** – High-level concept and a detailed outline (beats per chapter, clue placement).
+2. **Chapter-by-chapter generation** – 10–12 chapters, each generated separately.
+3. **Memory between chapters** – After each chapter, a summary and story state (characters, clues, timeline) are kept and fed into the next chapter prompt for continuity.
+4. **Assembly** – Final manuscript is exported to `.docx`.
+
+Word count is controlled by chapter targets (e.g. 11 chapters × ~2,200 words ≈ 24,200 words). **OpenAI** is strong for structure and style in this workflow; **Llama** (via Ollama) works too but needs enough VRAM/RAM and careful prompting—either way, generation is chunked by chapter, not one prompt.
+
 ## Requirements
 
 - Python 3.9+
