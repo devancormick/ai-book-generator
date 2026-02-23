@@ -61,6 +61,7 @@ Word count is controlled by chapter targets (e.g. 11 chapters Ã— ~2,200 words â‰
    | `--output DIR` | Custom output directory (default: `./output/`) |
    | `--author NAME` | Author name shown on the manuscript byline |
    | `--model MODEL` | Override the LLM model name (e.g. `gpt-4o`, `llama3.1`) |
+   | `--pov first\|third` | Narrative point of view (default: first) |
    | `--test` | Quick 2-chapter test run (~800 words each) |
 
 6. **Output:** `output/manuscript_<Title>_<timestamp>.docx` (default). Use `--format md` for Markdown.

@@ -73,6 +73,12 @@ def _parse_args() -> argparse.Namespace:
         metavar="MODEL",
         help="Override the LLM model name (OpenAI model ID or Ollama model name)",
     )
+    parser.add_argument(
+        "--pov",
+        choices=["first", "third"],
+        default="first",
+        help="Narrative point of view: first (default) or third person",
+    )
     args, _ = parser.parse_known_args()
     return args
 
@@ -86,6 +92,14 @@ TEST_RUN = _ARGS.test or os.environ.get("TEST_RUN", "").strip() in ("1", "true",
 if _ARGS.model:
     OPENAI_MODEL = _ARGS.model
     OLLAMA_MODEL = _ARGS.model
+
+# Narrative point-of-view setting
+_POV = _ARGS.pov  # "first" or "third"
+POV_INSTRUCTION = (
+    "first person past tense (the narrator is the detective/protagonist, using 'I')"
+    if _POV == "first"
+    else "third person past tense"
+)
 
 
 def _parse_format() -> str:
@@ -276,7 +290,7 @@ def generate_chapter(
 
     system = (
         f"You are a professional writer of {GENRE} fiction. "
-        "Write in third person past tense. Maintain continuity with the given outline and story state. "
+        f"Write in {POV_INSTRUCTION}. Maintain continuity with the given outline and story state. "
         f"Aim for approximately {TARGET_WORDS_PER_CHAPTER} words for this chapter. "
         "Output only the chapter prose, no title or chapter number."
     )
@@ -383,6 +397,7 @@ def main():
     if TEST_RUN:
         print("Test run: 2 short chapters (~800 words each).")
     print(f"Output format: {OUTPUT_FORMAT}")
+    print(f"Point of view: {_POV} person")
     if use_openai():
         print(f"Using OpenAI API (model: {OPENAI_MODEL}).")
     else:
@@ -431,7 +446,8 @@ def main():
         if len(text.split()) < min_words:
             print(f"  Chapter too short ({len(text.split())} words), extending...")
             ext_system = (
-                f"You are a writer. Continue this chapter in the same style. "
+                f"You are a writer. Continue this chapter in the same style, "
+                f"writing in {POV_INSTRUCTION}. "
                 f"Add approximately {min_words - len(text.split())} more words. "
                 "Output only the continuation, no recap."
             )
