@@ -6,7 +6,7 @@ Local Python script that generates a 20,000–30,000 word murder mystery novel. 
 
 - Generates a structured outline (10–12 chapters)
 - Writes each chapter with a simple memory/summary system for continuity
-- Exports the manuscript as `manuscript.docx` in the project folder
+- Exports the manuscript as a timestamped `.docx` (default) or `.md` file in `output/`
 
 ## Why this approach?
 
@@ -53,8 +53,17 @@ Word count is controlled by chapter targets (e.g. 11 chapters × ~2,200 words �
    ```bash
    python generate_novel.py
    ```
+   Options:
+   | Flag | Description |
+   |------|-------------|
+   | `--chapters 10\|11\|12` | Number of chapters (default: 11) |
+   | `--format md\|docx` | Output format (default: docx) |
+   | `--output DIR` | Custom output directory (default: `./output/`) |
+   | `--author NAME` | Author name shown on the manuscript byline |
+   | `--model MODEL` | Override the LLM model name (e.g. `gpt-4o`, `llama3.1`) |
+   | `--test` | Quick 2-chapter test run (~800 words each) |
 
-6. **Output:** `output/manuscript.md` (default) or `output/manuscript.docx`. Use `--format docx` or `OUTPUT_FORMAT=docx` for Word.
+6. **Output:** `output/manuscript_<Title>_<timestamp>.docx` (default). Use `--format md` for Markdown.
 
 ## Environment variables
 
@@ -64,7 +73,9 @@ Word count is controlled by chapter targets (e.g. 11 chapters × ~2,200 words �
 | `OPENAI_MODEL`    | OpenAI model (default: `gpt-4o-mini`) |
 | `OLLAMA_HOST`     | Ollama base URL (default: `http://localhost:11434`) |
 | `OLLAMA_MODEL`    | Ollama model (default: `llama3.2`) |
-| `OUTPUT_FORMAT`   | `md` (default) or `docx` |
+| `OUTPUT_FORMAT`   | `docx` (default) or `md` |
+| `TARGET_CHAPTERS` | 10, 11, or 12 (default: 11) |
+| `TEST_RUN`        | Set to `1` for a quick 2-chapter test (same as `--test`) |
 
 ## Project status
 
