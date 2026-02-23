@@ -6,7 +6,8 @@ Local Python script that generates a 20,000–30,000 word murder mystery novel. 
 
 - Generates a structured outline (10–12 chapters)
 - Writes each chapter with a simple memory/summary system for continuity
-- Exports the manuscript as a timestamped `.docx` (default) or `.md` file in `output/`
+- Exports the manuscript as `.md` or `.docx`
+- **Two interfaces:** a web UI (Streamlit) and a CLI script
 
 ## Why this approach?
 
@@ -60,22 +61,30 @@ Word count is controlled by chapter targets (e.g. 11 chapters × ~2,200 words �
    ```
    If no key is set, the script falls back to Ollama (local, CPU-intensive).
 
-5. **Run the generator:**
+5. **Run — choose your interface:**
+
+   **Web UI (recommended):**
+   ```bash
+   streamlit run app.py
+   ```
+   Opens in your browser. Enter a topic, optionally auto-generate a premise, then click **Generate Novel**. Download as `.md` or `.docx` when done.
+
+   **CLI:**
    ```bash
    python generate_novel.py
    ```
-   Options:
    | Flag | Description |
    |------|-------------|
    | `--chapters 10\|11\|12` | Number of chapters (default: 11) |
    | `--format md\|docx` | Output format (default: md) |
    | `--output DIR` | Custom output directory (default: `./output/`) |
    | `--author NAME` | Author name shown on the manuscript byline |
-   | `--model MODEL` | Override the LLM model name (e.g. `gpt-4o`, `llama3.1`) |
+   | `--model MODEL` | Override the LLM model name |
    | `--pov first\|third` | Narrative point of view (default: first) |
+   | `--resume [FILE]` | Resume an interrupted run from the latest checkpoint |
    | `--test` | Quick 2-chapter test run (~800 words each) |
 
-6. **Output:** `output/manuscript_<Title>_<timestamp>.md` (default). Use `--format docx` for Word.
+6. **Output (CLI):** `output/manuscript_<Title>_<timestamp>.md`. Use `--format docx` for Word.
 
 ## Environment variables
 
