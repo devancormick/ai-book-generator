@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 AI Book Generator – local script to generate a murder mystery novel (20k–30k words)
-using OpenAI API or local Llama via Ollama. Outputs .docx (default) or .md.
+using OpenAI, Groq, OpenRouter, or local Llama via Ollama. Outputs .docx (default) or .md.
 """
 
 import argparse
@@ -28,9 +28,16 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Pt
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
+OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
+
 OLLAMA_BASE = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2")
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 
 
 def _parse_args() -> argparse.Namespace:
@@ -88,9 +95,11 @@ _ARGS = _parse_args()
 # TEST_RUN: --test flag takes precedence, then env var
 TEST_RUN = _ARGS.test or os.environ.get("TEST_RUN", "").strip() in ("1", "true", "yes")
 
-# --model overrides env vars for either backend
+# --model overrides the model name for whichever backend is active
 if _ARGS.model:
     OPENAI_MODEL = _ARGS.model
+    GROQ_MODEL = _ARGS.model
+    OPENROUTER_MODEL = _ARGS.model
     OLLAMA_MODEL = _ARGS.model
 
 # Narrative point-of-view setting
@@ -122,11 +131,13 @@ GENRE = "murder mystery"
 _MAX_RETRIES = 3
 _RETRY_DELAY = 5  # seconds between retry attempts
 
+# ── Per-provider validity cache ───────────────────────────────────────────────
 _OPENAI_VALID: Optional[bool] = None
+_GROQ_VALID: Optional[bool] = None
+_OPENROUTER_VALID: Optional[bool] = None
 
 
 def _validate_openai_key() -> bool:
-    """Validate OPENAI_API_KEY: format check + API ping. Result is cached."""
     global _OPENAI_VALID
     if _OPENAI_VALID is not None:
         return _OPENAI_VALID
@@ -136,8 +147,7 @@ def _validate_openai_key() -> bool:
         return False
     try:
         from openai import OpenAI
-        client = OpenAI(api_key=key)
-        client.models.list()
+        OpenAI(api_key=key).models.list()
         _OPENAI_VALID = True
         return True
     except Exception:
@@ -145,18 +155,71 @@ def _validate_openai_key() -> bool:
         return False
 
 
+def _validate_groq_key() -> bool:
+    global _GROQ_VALID
+    if _GROQ_VALID is not None:
+        return _GROQ_VALID
+    key = (GROQ_API_KEY or "").strip()
+    if not key:
+        _GROQ_VALID = False
+        return False
+    try:
+        from openai import OpenAI
+        OpenAI(api_key=key, base_url="https://api.groq.com/openai/v1").models.list()
+        _GROQ_VALID = True
+        return True
+    except Exception:
+        _GROQ_VALID = False
+        return False
+
+
+def _validate_openrouter_key() -> bool:
+    global _OPENROUTER_VALID
+    if _OPENROUTER_VALID is not None:
+        return _OPENROUTER_VALID
+    key = (OPENROUTER_API_KEY or "").strip()
+    if not key:
+        _OPENROUTER_VALID = False
+        return False
+    try:
+        from openai import OpenAI
+        OpenAI(api_key=key, base_url="https://openrouter.ai/api/v1").models.list()
+        _OPENROUTER_VALID = True
+        return True
+    except Exception:
+        _OPENROUTER_VALID = False
+        return False
+
+
 def use_openai() -> bool:
     return _validate_openai_key()
 
+def use_groq() -> bool:
+    return not use_openai() and _validate_groq_key()
+
+def use_openrouter() -> bool:
+    return not use_openai() and not _validate_groq_key() and _validate_openrouter_key()
+
+
+def _active_backend() -> str:
+    """Return a human-readable name for the backend that will be used."""
+    if use_openai():
+        return f"OpenAI ({OPENAI_MODEL})"
+    if _validate_groq_key():
+        return f"Groq ({GROQ_MODEL})"
+    if _validate_openrouter_key():
+        return f"OpenRouter ({OPENROUTER_MODEL})"
+    return f"Ollama/{OLLAMA_MODEL} at {OLLAMA_BASE}"
+
 
 def check_backend():
-    """Verify the chosen backend is reachable and the model is available."""
-    if use_openai():
+    """Verify the chosen backend is reachable before generation starts."""
+    if use_openai() or _validate_groq_key() or _validate_openrouter_key():
         return
+    # Ollama fallback — check it is running and the model is pulled
     try:
         r = requests.get(f"{OLLAMA_BASE.rstrip('/')}/api/tags", timeout=5)
         r.raise_for_status()
-        # Warn if the requested model has not been pulled yet
         tags = r.json()
         available = [m.get("name", "") for m in tags.get("models", [])]
         model_base = OLLAMA_MODEL.split(":")[0]
@@ -168,24 +231,30 @@ def check_backend():
             )
             print(f"  Pull it first with: ollama pull {OLLAMA_MODEL}", file=sys.stderr)
     except requests.exceptions.RequestException as e:
-        print("Ollama is not running or not reachable.", file=sys.stderr)
+        print("No cloud API key set and Ollama is not reachable.", file=sys.stderr)
         print(f"  {e}", file=sys.stderr)
         print(
-            "  Start Ollama (e.g. run 'ollama serve' or start the Ollama app), then run this script again.",
-            file=sys.stderr,
-        )
-        print(
-            "  Or set OPENAI_API_KEY in .env to use OpenAI instead.",
+            "  Options:\n"
+            "    • Set GROQ_API_KEY in .env for free cloud inference (recommended)\n"
+            "    • Set OPENROUTER_API_KEY in .env for free cloud inference\n"
+            "    • Start Ollama locally: ollama serve",
             file=sys.stderr,
         )
         sys.exit(1)
 
 
-def complete_openai(system: str, user: str) -> str:
+def _complete_compat(base_url: str, api_key: str, model: str, system: str, user: str) -> str:
+    """Call any OpenAI-compatible API (OpenAI, Groq, OpenRouter)."""
     from openai import OpenAI
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    extra = {}
+    if "openrouter" in base_url:
+        extra["default_headers"] = {
+            "HTTP-Referer": "https://github.com/devancormick/ai-book-generator",
+            "X-Title": "AI Book Generator",
+        }
+    client = OpenAI(api_key=api_key, base_url=base_url, **extra)
     resp = client.chat.completions.create(
-        model=OPENAI_MODEL,
+        model=model,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -193,6 +262,16 @@ def complete_openai(system: str, user: str) -> str:
         max_tokens=8192,
     )
     return (resp.choices[0].message.content or "").strip()
+
+
+def complete_openai(system: str, user: str) -> str:
+    return _complete_compat("https://api.openai.com/v1", OPENAI_API_KEY, OPENAI_MODEL, system, user)
+
+def complete_groq(system: str, user: str) -> str:
+    return _complete_compat("https://api.groq.com/openai/v1", GROQ_API_KEY, GROQ_MODEL, system, user)
+
+def complete_openrouter(system: str, user: str) -> str:
+    return _complete_compat("https://openrouter.ai/api/v1", OPENROUTER_API_KEY, OPENROUTER_MODEL, system, user)
 
 
 def complete_ollama(system: str, user: str) -> str:
@@ -210,40 +289,51 @@ def complete_ollama(system: str, user: str) -> str:
 
 
 def _is_quota_error(e: Exception) -> bool:
-    """Return True for permanent billing/quota errors that should not be retried."""
+    """Return True for permanent billing/quota errors — do not retry, try next provider."""
     msg = str(e).lower()
-    return "insufficient_quota" in msg or "billing" in msg
+    return "insufficient_quota" in msg or "billing" in msg or "rate_limit" not in msg and "429" in str(e)
 
 
 def complete(system: str, user: str) -> str:
-    """Call the active LLM backend. Retries up to _MAX_RETRIES times on failure.
-    On permanent quota/billing errors from OpenAI, falls back to Ollama immediately."""
-    global _OPENAI_VALID
+    """Call the best available backend in priority order: OpenAI → Groq → OpenRouter → Ollama.
+    On permanent quota/billing errors the exhausted provider is skipped automatically."""
+    global _OPENAI_VALID, _GROQ_VALID, _OPENROUTER_VALID
+
+    providers = [
+        ("OpenAI",      use_openai,          complete_openai,      lambda: setattr(__builtins__, '_', None) or globals().update(_OPENAI_VALID=False)),
+        ("Groq",        _validate_groq_key,  complete_groq,        lambda: globals().update(_GROQ_VALID=False)),
+        ("OpenRouter",  _validate_openrouter_key, complete_openrouter, lambda: globals().update(_OPENROUTER_VALID=False)),
+        ("Ollama",      lambda: True,        complete_ollama,      lambda: None),
+    ]
+
     last_err: Optional[Exception] = None
     for attempt in range(1, _MAX_RETRIES + 1):
-        try:
-            if use_openai():
-                return complete_openai(system, user)
-            return complete_ollama(system, user)
-        except Exception as e:
-            last_err = e
-            if use_openai() and _is_quota_error(e):
-                # Quota exhausted – invalidate the key and fall back to Ollama
-                _OPENAI_VALID = False
-                print(
-                    "  OpenAI quota exhausted. Falling back to Ollama automatically.",
-                    file=sys.stderr,
-                )
-                check_backend()
-                continue  # retry immediately with Ollama
-            if attempt < _MAX_RETRIES:
-                print(
-                    f"  LLM call failed (attempt {attempt}/{_MAX_RETRIES}): {e}. "
-                    f"Retrying in {_RETRY_DELAY}s...",
-                    file=sys.stderr,
-                )
-                time.sleep(_RETRY_DELAY)
-    raise RuntimeError(f"LLM call failed after {_MAX_RETRIES} attempts: {last_err}") from last_err
+        for name, is_active, call_fn, invalidate in providers:
+            if not is_active():
+                continue
+            try:
+                return call_fn(system, user)
+            except Exception as e:
+                last_err = e
+                if _is_quota_error(e):
+                    print(f"  {name} quota/billing error — skipping to next provider.", file=sys.stderr)
+                    if name == "OpenAI":
+                        _OPENAI_VALID = False
+                    elif name == "Groq":
+                        _GROQ_VALID = False
+                    elif name == "OpenRouter":
+                        _OPENROUTER_VALID = False
+                    break  # try next provider immediately
+                # Transient error — retry this provider after delay
+                if attempt < _MAX_RETRIES:
+                    print(
+                        f"  {name} call failed (attempt {attempt}/{_MAX_RETRIES}): {e}. "
+                        f"Retrying in {_RETRY_DELAY}s...",
+                        file=sys.stderr,
+                    )
+                    time.sleep(_RETRY_DELAY)
+                break
+    raise RuntimeError(f"All LLM backends failed after {_MAX_RETRIES} attempts. Last error: {last_err}") from last_err
 
 
 def generate_outline() -> list[dict]:
@@ -415,15 +505,7 @@ def main():
         print("Test run: 2 short chapters (~800 words each).")
     print(f"Output format: {OUTPUT_FORMAT}")
     print(f"Point of view: {_POV} person")
-    if use_openai():
-        print(f"Using OpenAI API (model: {OPENAI_MODEL}).")
-    else:
-        key_present = bool((OPENAI_API_KEY or "").strip())
-        if key_present:
-            print("OpenAI key invalid or unreachable, using Llama (Ollama).")
-        else:
-            print("No OpenAI key provided, using Llama (Ollama).")
-        print(f"Ollama at {OLLAMA_BASE} (model: {OLLAMA_MODEL}).")
+    print(f"Backend: {_active_backend()}")
     check_backend()
 
     print("Generating outline...")
