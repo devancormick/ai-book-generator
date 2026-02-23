@@ -46,7 +46,7 @@ def _parse_args() -> argparse.Namespace:
         "--format", "-f",
         choices=["md", "docx"],
         default=None,
-        help="Output format: docx (default) or md",
+        help="Output format: md (default) or docx",
     )
     parser.add_argument(
         "--chapters",
@@ -114,7 +114,7 @@ POV_INSTRUCTION = (
 def _parse_format() -> str:
     if _ARGS.format:
         return _ARGS.format
-    raw = (os.environ.get("OUTPUT_FORMAT", "docx") or "docx").strip().lower()
+    raw = (os.environ.get("OUTPUT_FORMAT", "md") or "md").strip().lower()
     return "docx" if raw == "docx" else "md"
 
 

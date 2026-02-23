@@ -68,14 +68,14 @@ Word count is controlled by chapter targets (e.g. 11 chapters Ã— ~2,200 words â‰
    | Flag | Description |
    |------|-------------|
    | `--chapters 10\|11\|12` | Number of chapters (default: 11) |
-   | `--format md\|docx` | Output format (default: docx) |
+   | `--format md\|docx` | Output format (default: md) |
    | `--output DIR` | Custom output directory (default: `./output/`) |
    | `--author NAME` | Author name shown on the manuscript byline |
    | `--model MODEL` | Override the LLM model name (e.g. `gpt-4o`, `llama3.1`) |
    | `--pov first\|third` | Narrative point of view (default: first) |
    | `--test` | Quick 2-chapter test run (~800 words each) |
 
-6. **Output:** `output/manuscript_<Title>_<timestamp>.docx` (default). Use `--format md` for Markdown.
+6. **Output:** `output/manuscript_<Title>_<timestamp>.md` (default). Use `--format docx` for Word.
 
 ## Environment variables
 
@@ -89,7 +89,7 @@ Word count is controlled by chapter targets (e.g. 11 chapters Ã— ~2,200 words â‰
 | `OPENAI_MODEL`        | OpenAI model (default: `gpt-4o-mini`) |
 | `OLLAMA_HOST`         | Ollama base URL (default: `http://localhost:11434`) |
 | `OLLAMA_MODEL`        | Ollama model (default: `llama3.2`) |
-| `OUTPUT_FORMAT`       | `docx` (default) or `md` |
+| `OUTPUT_FORMAT`       | `md` (default) or `docx` |
 | `TARGET_CHAPTERS`     | 10, 11, or 12 (default: 11) |
 | `TEST_RUN`            | Set to `1` for a quick 2-chapter test (same as `--test`) |
 
