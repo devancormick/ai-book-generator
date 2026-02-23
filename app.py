@@ -26,23 +26,25 @@ OPENAI_MODEL     = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 GROQ_API_KEY     = os.environ.get("GROQ_API_KEY", "")
 GROQ_MODEL       = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
+OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "nvidia/nemotron-3-nano-30b-a3b:free")
 OLLAMA_BASE      = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL     = os.environ.get("OLLAMA_MODEL", "llama3.2")
 
 
 # ── Backend detection (cached for the session) ────────────────────────────────
-@st.cache_resource(show_spinner="Checking available AI backends...")
-def detect_backend() -> dict:
-    """Try each provider in order; return info for the first valid one."""
+@st.cache_data(show_spinner="Checking available AI backends...", ttl=300)
+def detect_backends() -> list[dict]:
+    """Return ordered list of all reachable backends (used for fallback chain)."""
+    chain = []
+
     # OpenAI
     key = OPENAI_API_KEY.strip()
     if key and key.startswith("sk-") and len(key) >= 32:
         try:
             from openai import OpenAI
             OpenAI(api_key=key).models.list()
-            return {"name": "OpenAI", "provider": "openai", "api_key": key,
-                    "model": OPENAI_MODEL, "base_url": "https://api.openai.com/v1"}
+            chain.append({"name": "OpenAI", "provider": "openai", "api_key": key,
+                          "model": OPENAI_MODEL, "base_url": "https://api.openai.com/v1"})
         except Exception:
             pass
 
@@ -52,8 +54,8 @@ def detect_backend() -> dict:
         try:
             from openai import OpenAI
             OpenAI(api_key=key, base_url="https://api.groq.com/openai/v1").models.list()
-            return {"name": "Groq", "provider": "groq", "api_key": key,
-                    "model": GROQ_MODEL, "base_url": "https://api.groq.com/openai/v1"}
+            chain.append({"name": "Groq", "provider": "groq", "api_key": key,
+                          "model": GROQ_MODEL, "base_url": "https://api.groq.com/openai/v1"})
         except Exception:
             pass
 
@@ -63,8 +65,8 @@ def detect_backend() -> dict:
         try:
             from openai import OpenAI
             OpenAI(api_key=key, base_url="https://openrouter.ai/api/v1").models.list()
-            return {"name": "OpenRouter", "provider": "openrouter", "api_key": key,
-                    "model": OPENROUTER_MODEL, "base_url": "https://openrouter.ai/api/v1"}
+            chain.append({"name": "OpenRouter", "provider": "openrouter", "api_key": key,
+                          "model": OPENROUTER_MODEL, "base_url": "https://openrouter.ai/api/v1"})
         except Exception:
             pass
 
@@ -72,16 +74,37 @@ def detect_backend() -> dict:
     try:
         r = requests.get(f"{OLLAMA_BASE.rstrip('/')}/api/tags", timeout=5)
         r.raise_for_status()
-        return {"name": f"Ollama ({OLLAMA_MODEL})", "provider": "ollama",
-                "api_key": None, "model": OLLAMA_MODEL, "base_url": OLLAMA_BASE}
+        chain.append({"name": f"Ollama ({OLLAMA_MODEL})", "provider": "ollama",
+                      "api_key": None, "model": OLLAMA_MODEL, "base_url": OLLAMA_BASE})
     except Exception:
         pass
 
+    return chain
+
+
+def detect_backend() -> dict:
+    """Return the first available backend (for UI display and initial use)."""
+    chain = detect_backends()
+    if chain:
+        return chain[0]
     return {"name": "None", "provider": "none", "api_key": None, "model": None, "base_url": None}
 
 
-def call_llm(system: str, user: str, backend: dict) -> str:
-    """Send a prompt to the active backend and return the response text."""
+def _is_skippable(exc: Exception) -> bool:
+    """Return True if the exception means we should try the next backend."""
+    msg = str(exc).lower()
+    # Rate limits / quota exhausted
+    if any(k in msg for k in ("rate_limit_exceeded", "rate limit", "insufficient_quota",
+                               "tokens per day", "requests per day", "429")):
+        return True
+    # Model not found / endpoint gone — skip this provider
+    if "404" in msg or "no endpoints found" in msg or "model not found" in msg:
+        return True
+    return False
+
+
+def _call_one_backend(system: str, user: str, backend: dict) -> str:
+    """Call a single backend; raises on any error."""
     if backend["provider"] == "ollama":
         url = f"{backend['base_url'].rstrip('/')}/api/generate"
         r = requests.post(url, json={
@@ -110,6 +133,35 @@ def call_llm(system: str, user: str, backend: dict) -> str:
     return (resp.choices[0].message.content or "").strip()
 
 
+def call_llm(system: str, user: str, backend: dict) -> str:
+    """Send a prompt to the active backend; auto-fallback on rate-limit errors."""
+    # Build full fallback chain; ensure current backend is tried first
+    chain = detect_backends()
+    # Put the requested backend at the front if it's not already first
+    ordered = [b for b in chain if b["provider"] == backend["provider"]]
+    ordered += [b for b in chain if b["provider"] != backend["provider"]]
+    if not ordered:
+        ordered = [backend]
+
+    last_exc = None
+    for candidate in ordered:
+        try:
+            return _call_one_backend(system, user, candidate)
+        except Exception as exc:
+            if _is_skippable(exc):
+                st.warning(
+                    f"**{candidate['name']}** unavailable ({type(exc).__name__}) — trying next backend...",
+                    icon="⚠️",
+                )
+                last_exc = exc
+                continue
+            raise  # Non-skippable errors propagate immediately
+
+    raise RuntimeError(
+        f"All backends exhausted. Last error: {last_exc}"
+    ) from last_exc
+
+
 # ── Generation functions ──────────────────────────────────────────────────────
 def generate_description(topic: str, backend: dict) -> str:
     return call_llm(
@@ -119,6 +171,28 @@ def generate_description(topic: str, backend: dict) -> str:
         "Output only the description, no preamble.",
         backend,
     )
+
+
+def generate_topic_and_description(backend: dict) -> dict:
+    """Generate both a topic/title idea and a full premise in one shot."""
+    raw = call_llm(
+        "You are a creative murder mystery writer. Output only valid JSON, no markdown.",
+        "Invent a unique, compelling murder mystery concept. "
+        "Return a JSON object with exactly two keys: "
+        "\"topic\" (a short evocative title idea, 5-10 words) and "
+        "\"description\" (a 3-4 sentence premise including setting, victim, detective, and central mystery).",
+        backend,
+    )
+    raw = re.sub(r"^```\w*\n?", "", raw)
+    raw = re.sub(r"\n?```\s*$", "", raw)
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict) and data.get("topic") and data.get("description"):
+            return data
+    except Exception:
+        pass
+    # Fallback: parse manually if JSON fails
+    return {"topic": "A Murder Mystery", "description": raw.strip()}
 
 
 def generate_outline(topic: str, description: str, num_chapters: int, pov: str, backend: dict) -> list[dict]:
@@ -194,6 +268,10 @@ def update_state(text: str, state: dict, backend: dict) -> dict:
         data = json.loads(raw)
         for key in ("characters", "locations", "clues"):
             for item in data.get(key, []):
+                # LLM sometimes returns dicts instead of strings — flatten to str
+                if isinstance(item, dict):
+                    item = ", ".join(f"{k}: {v}" for k, v in item.items() if v)
+                item = str(item).strip()
                 if item and item not in state[key]:
                     state[key].append(item)
     except Exception:
@@ -250,14 +328,21 @@ st.title("AI Book Generator")
 st.caption("Generate a full murder mystery novel — chapter by chapter, with AI.")
 
 # Session state defaults
-for key, default in [("description", ""), ("chapters_out", []), ("novel_title", "")]:
+for key, default in [("topic", ""), ("description", ""), ("chapters_out", []),
+                     ("novel_title", ""), ("saved_md", ""), ("saved_docx", "")]:
     if key not in st.session_state:
         st.session_state[key] = default
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("Settings")
-    num_chapters = st.selectbox("Number of chapters", [10, 11, 12], index=1)
+    _ch_options = [5, 6, 7, 8, 9, 10, 11, 12, 15, 20, "Custom..."]
+    _ch_select  = st.selectbox("Number of chapters", _ch_options, index=6)
+    if _ch_select == "Custom...":
+        num_chapters = st.number_input("Custom chapter count", min_value=1, max_value=50,
+                                       value=11, step=1)
+    else:
+        num_chapters = int(_ch_select)
     pov          = st.radio("Point of view", ["first", "third"],
                              format_func=lambda x: f"{x.capitalize()} person")
     author_name  = st.text_input("Author name (optional)")
@@ -270,11 +355,26 @@ with st.sidebar:
         st.success(f"{backend['name']}\n{backend['model']}")
 
 # ── Inputs ────────────────────────────────────────────────────────────────────
-topic = st.text_input(
-    "Topic / Title idea",
-    placeholder="e.g. A murder at a Victorian manor during a snowstorm",
-    max_chars=200,
-)
+col_topic, col_surprise = st.columns([5, 1])
+with col_topic:
+    topic = st.text_input(
+        "Topic / Title idea",
+        value=st.session_state.topic,
+        placeholder="e.g. A murder at a Victorian manor during a snowstorm",
+        max_chars=200,
+    )
+    # Sync manual edits back to session state
+    st.session_state.topic = topic
+with col_surprise:
+    st.write("")
+    st.write("")
+    if st.button("Surprise Me!", disabled=backend["provider"] == "none",
+                 use_container_width=True, help="Auto-generate a topic AND premise in one click"):
+        with st.spinner("Dreaming up a mystery..."):
+            result = generate_topic_and_description(backend)
+            st.session_state.topic = result["topic"]
+            st.session_state.description = result["description"]
+        st.rerun()
 
 col_area, col_btn = st.columns([5, 1])
 with col_area:
@@ -359,6 +459,19 @@ if st.button("Generate Novel", type="primary", disabled=not can_generate, use_co
     st.session_state.chapters_out = chapters_out
     total_words = sum(len(b.split()) for _, b in chapters_out)
     progress.progress(1.0, text="Done!")
+
+    # Auto-save to output/ folder
+    import datetime, pathlib
+    out_dir = pathlib.Path("output")
+    out_dir.mkdir(exist_ok=True)
+    ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    out_md   = out_dir / f"manuscript_{_safe_filename(novel_title)}_{ts}.md"
+    out_docx = out_dir / f"manuscript_{_safe_filename(novel_title)}_{ts}.docx"
+    out_md.write_text(build_md(chapters_out, novel_title, author_name), encoding="utf-8")
+    out_docx.write_bytes(build_docx(chapters_out, novel_title, author_name))
+    st.session_state.saved_md   = str(out_md)
+    st.session_state.saved_docx = str(out_docx)
+
     status_box.success(
         f'Novel complete!  **"{novel_title}"**  —  {len(chapters_out)} chapters  ·  ~{total_words:,} words'
     )
@@ -401,3 +514,9 @@ if st.session_state.chapters_out:
             f"**~{total_words:,}** words  ·  "
             f"Backend: {backend['name']}"
         )
+        if st.session_state.saved_md:
+            st.info(
+                f"Also saved to disk:\n"
+                f"- `{st.session_state.saved_md}`\n"
+                f"- `{st.session_state.saved_docx}`"
+            )
