@@ -209,8 +209,16 @@ def complete_ollama(system: str, user: str) -> str:
     return (data.get("response") or "").strip()
 
 
+def _is_quota_error(e: Exception) -> bool:
+    """Return True for permanent billing/quota errors that should not be retried."""
+    msg = str(e).lower()
+    return "insufficient_quota" in msg or "billing" in msg
+
+
 def complete(system: str, user: str) -> str:
-    """Call the active LLM backend. Retries up to _MAX_RETRIES times on failure."""
+    """Call the active LLM backend. Retries up to _MAX_RETRIES times on failure.
+    On permanent quota/billing errors from OpenAI, falls back to Ollama immediately."""
+    global _OPENAI_VALID
     last_err: Optional[Exception] = None
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
@@ -219,6 +227,15 @@ def complete(system: str, user: str) -> str:
             return complete_ollama(system, user)
         except Exception as e:
             last_err = e
+            if use_openai() and _is_quota_error(e):
+                # Quota exhausted – invalidate the key and fall back to Ollama
+                _OPENAI_VALID = False
+                print(
+                    "  OpenAI quota exhausted. Falling back to Ollama automatically.",
+                    file=sys.stderr,
+                )
+                check_backend()
+                continue  # retry immediately with Ollama
             if attempt < _MAX_RETRIES:
                 print(
                     f"  LLM call failed (attempt {attempt}/{_MAX_RETRIES}): {e}. "
