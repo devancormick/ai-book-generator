@@ -86,6 +86,14 @@ def _parse_args() -> argparse.Namespace:
         default="first",
         help="Narrative point of view: first (default) or third person",
     )
+    parser.add_argument(
+        "--resume",
+        nargs="?",
+        const="auto",
+        default=None,
+        metavar="CHECKPOINT",
+        help="Resume from a checkpoint file. Omit path to auto-find the latest.",
+    )
     args, _ = parser.parse_known_args()
     return args
 
@@ -448,6 +456,36 @@ def summarize_chapter(chapter_text: str, story_state: dict) -> str:
     return complete(system, user)
 
 
+# ── Checkpoint helpers ────────────────────────────────────────────────────────
+
+def _out_dir() -> Path:
+    if _ARGS.output:
+        return Path(_ARGS.output).expanduser().resolve()
+    return Path(__file__).resolve().parent / "output"
+
+
+def _find_latest_checkpoint() -> Optional[Path]:
+    """Return the most recently modified checkpoint in the output directory."""
+    candidates = sorted(
+        _out_dir().glob("checkpoint_*.json"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
+def _save_checkpoint(path: Path, data: dict) -> None:
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _load_checkpoint(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _make_title_slug(title: str) -> str:
+    return "_" + re.sub(r"[^\w\s-]", "", title).strip().replace(" ", "_")[:50] if title else ""
+
+
 def export_md(
     chapters: list[tuple[str, str]],
     output_path: Path,
@@ -508,35 +546,77 @@ def main():
     print(f"Backend: {_active_backend()}")
     check_backend()
 
-    print("Generating outline...")
-    outline = generate_outline()
-    novel_title = ""
-    title_slug = ""
-    for item in (outline or []):
-        if isinstance(item, dict):
-            raw_title = str(item.get("novel_title", "")).strip()
-            if raw_title:
-                novel_title = raw_title
-                title_slug = "_" + re.sub(r"[^\w\s-]", "", raw_title).strip().replace(" ", "_")[:50]
-            elif not novel_title and item.get("title"):
-                novel_title = str(item["title"]).strip()
-                title_slug = "_" + re.sub(r"[^\w\s-]", "", novel_title).strip().replace(" ", "_")[:50] if novel_title else ""
-            break
-    if not novel_title:
-        novel_title = outline[0].get("title", "Untitled") if outline and isinstance(outline[0], dict) else "Untitled"
-        title_slug = "_" + re.sub(r"[^\w\s-]", "", novel_title).strip().replace(" ", "_")[:50] if novel_title else ""
-    print(f'Outline: {len(outline)} chapters — "{novel_title}"')
-
-    story_state: dict = {
-        "characters": [],
-        "locations": [],
-        "clues": [],
-        "recent_summaries": [],
-    }
-    chapters_out: list[tuple[str, str]] = []
+    out_dir = _out_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
     author = _ARGS.author or ""
 
+    # ── Resume or fresh start ─────────────────────────────────────────────────
+    resume_arg = _ARGS.resume
+    checkpoint_path: Optional[Path] = None
+    chapters_out: list[tuple[str, str]] = []
+    story_state: dict = {"characters": [], "locations": [], "clues": [], "recent_summaries": []}
+    outline: list[dict] = []
+    novel_title = ""
+    title_slug = ""
+    run_ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+    if resume_arg is not None:
+        # Find checkpoint
+        if resume_arg == "auto":
+            checkpoint_path = _find_latest_checkpoint()
+            if checkpoint_path is None:
+                print("No checkpoint found in output directory. Starting fresh.", file=sys.stderr)
+                resume_arg = None
+            else:
+                print(f"Auto-resuming from: {checkpoint_path.name}")
+        else:
+            checkpoint_path = Path(resume_arg)
+            if not checkpoint_path.exists():
+                print(f"Checkpoint not found: {checkpoint_path}. Starting fresh.", file=sys.stderr)
+                resume_arg = None
+
+    if resume_arg is not None and checkpoint_path is not None:
+        # Load state from checkpoint
+        ckpt = _load_checkpoint(checkpoint_path)
+        outline = ckpt["outline"]
+        novel_title = ckpt["novel_title"]
+        title_slug = ckpt["title_slug"]
+        run_ts = ckpt["run_ts"]
+        story_state = ckpt["story_state"]
+        chapters_out = [(c["title"], c["body"]) for c in ckpt["chapters_out"]]
+        done = len(chapters_out)
+        print(f'Resuming "{novel_title}": {done}/{len(outline)} chapters already done.')
+    else:
+        # Fresh run — generate outline
+        print("Generating outline...")
+        outline = generate_outline()
+        for item in (outline or []):
+            if isinstance(item, dict):
+                raw_title = str(item.get("novel_title", "")).strip()
+                if raw_title:
+                    novel_title = raw_title
+                    title_slug = _make_title_slug(raw_title)
+                elif not novel_title and item.get("title"):
+                    novel_title = str(item["title"]).strip()
+                    title_slug = _make_title_slug(novel_title)
+                break
+        if not novel_title:
+            novel_title = outline[0].get("title", "Untitled") if outline and isinstance(outline[0], dict) else "Untitled"
+            title_slug = _make_title_slug(novel_title)
+        checkpoint_path = out_dir / f"checkpoint{title_slug}_{run_ts}.json"
+
+    print(f'Outline: {len(outline)} chapters — "{novel_title}"')
+
+    # Paths for the in-progress markdown (updated after every chapter) and final output
+    base = "manuscript_test" if TEST_RUN else "manuscript"
+    inprogress_path = out_dir / f"inprogress{title_slug}_{run_ts}.md"
+
+    # ── Chapter generation loop ───────────────────────────────────────────────
+    start_from = len(chapters_out)  # 0 for fresh, N for resumed
+
     for i, spec in enumerate(outline):
+        if i < start_from:
+            continue  # already done — skip
         ch_num = i + 1
         ch_title = spec.get("title", f"Chapter {ch_num}")
         print(f"Writing chapter {ch_num}/{len(outline)}: {ch_title}...")
@@ -555,25 +635,39 @@ def main():
         ch_words = len(text.split())
         print(f"  Done: ~{ch_words:,} words.")
         chapters_out.append((ch_title, text))
+
         summary = summarize_chapter(text, story_state)
         story_state["recent_summaries"].append(f"Ch{ch_num}: {summary}")
         story_state = extract_state_updates(text, story_state)
 
+        # Save checkpoint JSON (full resumable state)
+        _save_checkpoint(checkpoint_path, {
+            "novel_title": novel_title,
+            "title_slug": title_slug,
+            "run_ts": run_ts,
+            "outline": outline,
+            "story_state": story_state,
+            "chapters_out": [{"title": t, "body": b} for t, b in chapters_out],
+        })
+
+        # Save in-progress markdown (readable after every chapter)
+        export_md(chapters_out, inprogress_path, title=novel_title, author=author)
+        print(f"  Saved progress -> {inprogress_path.name}")
+
+    # ── Final export ─────────────────────────────────────────────────────────
     ext = "docx" if OUTPUT_FORMAT == "docx" else "md"
-    base = "manuscript_test" if TEST_RUN else "manuscript"
-    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    out_name = f"{base}{title_slug}_{ts}.{ext}"
-    if _ARGS.output:
-        out_dir = Path(_ARGS.output).expanduser().resolve()
-    else:
-        out_dir = Path(__file__).resolve().parent / "output"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_name = f"{base}{title_slug}_{run_ts}.{ext}"
     out_path = out_dir / out_name
 
     if OUTPUT_FORMAT == "docx":
         export_docx(chapters_out, out_path, title=novel_title, author=author)
     else:
         export_md(chapters_out, out_path, title=novel_title, author=author)
+
+    # Clean up temporary files now that the final manuscript is saved
+    for tmp in (checkpoint_path, inprogress_path):
+        if tmp and tmp.exists():
+            tmp.unlink()
 
     word_count = sum(len(b.split()) for _, b in chapters_out)
     print(f"\nDone. Manuscript saved to: {out_path}")
