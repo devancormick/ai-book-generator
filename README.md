@@ -93,7 +93,7 @@ Word count is controlled by chapter targets (e.g. 11 chapters × ~2,200 words �
 | `GROQ_API_KEY`        | Groq cloud key — **free**, fast (priority 1 after OpenAI) |
 | `GROQ_MODEL`          | Groq model (default: `llama-3.3-70b-versatile`) |
 | `OPENROUTER_API_KEY`  | OpenRouter key — free models available (priority 2) |
-| `OPENROUTER_MODEL`    | OpenRouter model (default: `meta-llama/llama-3.1-8b-instruct:free`) |
+| `OPENROUTER_MODEL`    | OpenRouter model (default: `nvidia/nemotron-3-nano-30b-a3b:free`) |
 | `OPENAI_API_KEY`      | OpenAI key — paid, highest priority if set |
 | `OPENAI_MODEL`        | OpenAI model (default: `gpt-4o-mini`) |
 | `OLLAMA_HOST`         | Ollama base URL (default: `http://localhost:11434`) |
